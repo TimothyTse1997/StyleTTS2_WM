@@ -543,6 +543,47 @@ class ADPM2Sampler(Sampler):
 
         return source * mask + x * ~mask
 
+class ADPM2NoiseInsersionSampler(ADPM2Sampler):
+
+    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float, epsilon=None) -> Tensor:
+        # Sigma steps
+        sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
+        # Derivative at sigma (∂x/∂sigma)
+        d = (x - fn(x, sigma=sigma)) / sigma
+        # Denoise to midpoint
+        x_mid = x + d * (sigma_mid - sigma)
+        # Derivative at sigma_mid (∂x_mid/∂sigma_mid)
+        d_mid = (x_mid - fn(x_mid, sigma=sigma_mid)) / sigma_mid
+        # Denoise to next
+        x = x + d_mid * (sigma_down - sigma)
+        # Add randomness
+        if epsilon is None:
+            x_next = x + torch.randn_like(x) * sigma_up
+        else:
+            print("epsilon activated :)")
+            x_next = x + epsilon * sigma_up
+        return x_next
+
+    def forward(
+        self,
+        noise: Tensor,
+        fn: Callable,
+        sigmas: Tensor,
+        num_steps: int,
+        epsilons=None
+    ) -> Tensor:
+        x = sigmas[0] * noise
+        # Denoise to sample
+        if not epsilons:
+            for i in range(num_steps - 1):
+                x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        else:
+            for i in range(num_steps - 1):
+                x = self.step(
+                    x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1], epsilon=epsilons[i])  # type: ignore # noqa
+        return x
+
+
 
 """ Main Classes """
 
@@ -585,6 +626,31 @@ class DiffusionSampler(nn.Module):
         x = x.clamp(-1.0, 1.0) if self.clamp else x
         return x
 
+class DiffusionNoiseInsertSampler(DiffusionSampler):
+    # for noise insertion
+
+    def forward(
+        self,
+        noise: Tensor,
+        num_steps: Optional[int] = None,
+        epsilons=None,
+        **kwargs
+    ) -> Tensor:
+        device = noise.device
+        num_steps = default(num_steps, self.num_steps)  # type: ignore
+        assert exists(num_steps), "Parameter `num_steps` must be provided"
+
+        # Compute sigmas using schedule
+        sigmas = self.sigma_schedule(num_steps, device)
+
+        # Append additional kwargs to denoise function (used e.g. for conditional unet)
+        fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
+
+        # Sample using sampler
+        x = self.sampler(
+            noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons)
+        x = x.clamp(-1.0, 1.0) if self.clamp else x
+        return x
 
 class DiffusionInpainter(nn.Module):
     def __init__(
