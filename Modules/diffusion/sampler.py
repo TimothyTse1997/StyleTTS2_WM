@@ -477,6 +477,65 @@ class AEulerSampler(Sampler):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
         return x
 
+class AEulerDeterministicSampler(AEulerSampler):
+    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
+        # Sigma steps
+        sigma_up, sigma_down = self.get_sigmas(sigma, sigma_next)
+        # Derivative at sigma (∂x/∂sigma)
+        d = (x - fn(x, sigma=sigma)) / sigma
+        # Euler method
+        x_next = x + d * (sigma_down - sigma)
+        return x_next
+
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int, return_intermediate=False, **kwargs
+    ) -> Tensor:
+        x = sigmas[0] * noise
+        # Denoise to sample
+        steps = []
+        for i in range(num_steps - 1):
+            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+            if return_intermediate:
+                steps.append(x)
+        if not return_intermediate:
+            return x
+        return x, steps
+
+class AEulerInverseSampler(AEulerSampler):
+
+    def __init__(self, *args, inner_loop=5, latent_average=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner_loop = inner_loop
+        self.latent_average = latent_average
+
+    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
+        # Sigma steps
+        sigma_up, sigma_down = self.get_sigmas(sigma, sigma_next)
+        x_tmp = x
+        if self.latent_average:
+            all_tmp_x = []
+        for i in range(self.inner_loop):
+            # Derivative at sigma (∂x/∂sigma)
+            d = (x_tmp - fn(x_tmp, sigma=sigma)) / sigma
+            # Euler method
+            x_tmp = x - d * (sigma_down - sigma)
+            if self.latent_average: all_tmp_x.append(x_tmp)
+        if self.latent_average:
+            x_next = torch.stack(all_tmp_x).mean(0)
+        else:
+            x_next = x_tmp
+
+        return x_next
+
+    def forward(
+        self, audio: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        x_T = audio #sigmas[0] * noise
+        # Renoise sample
+        for i in reversed(range(num_steps - 1)):
+            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return x
+
 
 class ADPM2Sampler(Sampler):
     """https://www.desmos.com/calculator/jbxjlqd9mb"""
@@ -545,23 +604,45 @@ class ADPM2Sampler(Sampler):
 
 class ADPM2NoiseInsersionSampler(ADPM2Sampler):
 
+    def vector_update_with_epsilon(self, v, epsilon):
+        # experimenting for different noise insertion method
+        scale = torch.norm(v, dim=(1, 2)) / 5
+        print(f"vect update activated: {scale}")
+        v = v + epsilon * scale
+        return v
+
     def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float, epsilon=None) -> Tensor:
         # Sigma steps
         sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
         # Derivative at sigma (∂x/∂sigma)
         d = (x - fn(x, sigma=sigma)) / sigma
+
+        # midpoint vector update
+        #if epsilon is not None:
+        #    print(d.shape)
+        #    d = self.vector_update_with_epsilon(d, epsilon)
+
         # Denoise to midpoint
         x_mid = x + d * (sigma_mid - sigma)
+
         # Derivative at sigma_mid (∂x_mid/∂sigma_mid)
         d_mid = (x_mid - fn(x_mid, sigma=sigma_mid)) / sigma_mid
+
+        # updated again
+        if epsilon is not None:
+            d = self.vector_update_with_epsilon(d, epsilon)
+
         # Denoise to next
         x = x + d_mid * (sigma_down - sigma)
+
         # Add randomness
-        if epsilon is None:
-            x_next = x + torch.randn_like(x) * sigma_up
-        else:
-            print("epsilon activated :)")
-            x_next = x + epsilon * sigma_up
+        # !!!! CAUTION: REMOVED NOISE FOR EXPERIMENT !!!
+        # if epsilon is None:
+        #     x_next = x + torch.randn_like(x) * sigma_up
+        # else:
+        #     #print(sigma_up)
+        #     x_next = x + epsilon * sigma_up
+        x_next = x
         return x_next
 
     def forward(
@@ -579,9 +660,12 @@ class ADPM2NoiseInsersionSampler(ADPM2Sampler):
                 x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
         else:
             for i in range(num_steps - 1):
+                print(i)
                 x = self.step(
                     x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1], epsilon=epsilons[i])  # type: ignore # noqa
         return x
+
+
 
 
 
@@ -634,6 +718,7 @@ class DiffusionNoiseInsertSampler(DiffusionSampler):
         noise: Tensor,
         num_steps: Optional[int] = None,
         epsilons=None,
+        return_intermediate=False,
         **kwargs
     ) -> Tensor:
         device = noise.device
@@ -647,10 +732,36 @@ class DiffusionNoiseInsertSampler(DiffusionSampler):
         fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
 
         # Sample using sampler
-        x = self.sampler(
-            noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons)
-        x = x.clamp(-1.0, 1.0) if self.clamp else x
-        return x
+        if not return_intermediate:
+            x = self.sampler(
+                noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons, return_intermediate=False)
+            x = x.clamp(-1.0, 1.0) if self.clamp else x
+            return x
+        else:
+            x, x_steps = self.sampler(
+                noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons, return_intermediate=True)
+            x = x.clamp(-1.0, 1.0) if self.clamp else x
+            return x, x_steps
+
+class DiffusionInversionSampler(DiffusionSampler):
+    def forward(
+        self, audio: Tensor, num_steps: Optional[int] = None, **kwargs
+    ) -> Tensor:
+        device = audio.device
+        num_steps = default(num_steps, self.num_steps)  # type: ignore
+        assert exists(num_steps), "Parameter `num_steps` must be provided"
+
+        # Compute sigmas using schedule
+        sigmas = self.sigma_schedule(num_steps, device)
+
+        # Append additional kwargs to denoise function (used e.g. for conditional unet)
+        fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
+
+        # Sample using sampler
+        inv_noise, inter_steps = self.sampler(audio, fn=fn, sigmas=sigmas, num_steps=num_steps)
+        #x = x.clamp(-1.0, 1.0) if self.clamp else x
+
+        return inv_noise, inv_steps
 
 class DiffusionInpainter(nn.Module):
     def __init__(

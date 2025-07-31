@@ -216,14 +216,14 @@ def encodec_test(audio_dir):
 
 
 if __name__ == "__main__":
-    debug()
-    #from pathlib import Path
+    #debug()
+    from pathlib import Path
 
-    #encodec = EncodecAugModule()
+    encodec = EncodecAugModule()
 
-    #test_dir = "../_examples/"
-    #results = encodec_test(test_dir)
-    #sorted_keys = sorted(list(results.keys()))
-    #print(sorted_keys)
-    #v = [np.mean(results[k]) for k in sorted_keys]
-    #print(v)
+    test_dir = "../_examples/"
+    results = encodec_test(test_dir)
+    sorted_keys = sorted(list(results.keys()))
+    print(sorted_keys)
+    v = [np.mean(results[k]) for k in sorted_keys]
+    print(v)

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 torch.manual_seed(0)
 torch.backends.cudnn.benchmark = False
@@ -35,7 +37,8 @@ from Modules.diffusion.sampler import (
     ADPM2Sampler,
     KarrasSchedule,
     DiffusionNoiseInsertSampler,
-    ADPM2NoiseInsersionSampler
+    ADPM2NoiseInsersionSampler,
+    AEulerDeterministicSampler
 )
 
 
@@ -49,7 +52,7 @@ class Inferencer:
 
     textclenaer = TextCleaner()
 
-    def __init__(self):
+    def __init__(self, sampler_class=ADPM2NoiseInsersionSampler):
         self.device = "cuda"
         self.config_path = "/gpfs/fs3c/nrc/dt/tst000/.cache/huggingface/hub/models--yl4579--StyleTTS2-LibriTTS/snapshots/3aa7ba7f8f275ec13dce21682a61494c35089e2a/Models/LibriTTS/config.yml"
 
@@ -60,7 +63,7 @@ class Inferencer:
         self.model, self.model_params = self.load_model(self.config, self.model_checkpoint_dir)
         self.sampler = DiffusionNoiseInsertSampler(
             self.model.diffusion.diffusion,
-            sampler=ADPM2NoiseInsersionSampler(),
+            sampler=sampler_class(),
             sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0), # empirical parameters
             clamp=False
         )
@@ -201,25 +204,23 @@ class Inferencer:
 
 
         return out.squeeze().cpu().numpy()[..., :-50] # weird pulse at the end of the model, need to be fixed later
-    
-if __name__ == "__main__":
-    from pathlib import Path
 
+def generate_sample_LibriTTS(
+    text = "I go to school by bus.",
+    tts_dataset_path=Path("/gpfs/fs3c/nrc/dt/tst000/LibriTTS/dev-clean/"),
+    output_dir="../_examples"
+):
+    #text = ''' StyleTTS 2 is a text to speech model that leverages style diffusion and adversarial training with large speech language models to achieve human level text to speech synthesis. ''' # @param {type:"string"}
     inferencer = Inferencer()
-
-    text = ''' StyleTTS 2 is a text to speech model that leverages style diffusion and adversarial training with large speech language models to achieve human level text to speech synthesis. ''' # @param {type:"string"}
-    tts_dataset_path = Path("/gpfs/fs3c/nrc/dt/tst000/LibriTTS/dev-clean/") 
     reference_dicts = {
         speaker_path.name: str(list(speaker_path.glob("**/*.wav"))[0]) for speaker_path in tts_dataset_path.glob("*")
     }
-    #reference_dicts['A'] = "/home/tst000/projects/tst000/LibriTTS/dev-clean/174/168635/174_168635_000014_000000.wav"
-    #reference_dicts['B'] = "/home/tst000/projects/tst000/LibriTTS/dev-clean/84/121550/84_121550_000007_000000.wav"
-
     device = "cuda"
 
     diffusion_steps = 20
     noise = torch.randn(1,1,256).to(device)
-    epsilons = [torch.randn_like(noise) for i in range(diffusion_steps-1)]
+    #epsilons = [torch.randn_like(noise) for i in range(diffusion_steps-1)]
+    epsilons = [torch.zeros_like(noise) for i in range(diffusion_steps-1)]
 
     special_noise = torch.randn_like(noise)
 
@@ -234,7 +235,7 @@ if __name__ == "__main__":
             m = np.max(np.abs(wav))
             wavf32 = (wav/m).astype(np.float32)
 
-            write(f"../_examples/example_{k}_no_aug.wav", 24000, wavf32)
+            write(f"{output_dir}/example_{k}_no_aug.wav", 24000, wavf32)
         except: continue
 
         current_epsilons = epsilons
@@ -248,4 +249,13 @@ if __name__ == "__main__":
             m = np.max(np.abs(wav))
             wavf32 = (wav/m).astype(np.float32)
 
-            write(f"../_examples/example_{k}_step_aug_{i}.wav", 24000, wavf32)
+            write(f"{output_dir}/example_{k}_step_aug_{i}.wav", 24000, wavf32)
+
+def generate_audio_with_intermediate_steps():
+    pass
+
+if __name__ == "__main__":
+    #generate_sample_LibriTTS()
+    pass
+
+    
