@@ -64,10 +64,10 @@ def save_line_plot(array, output_path="line_plot.png", title="Line Plot", xlabel
     return output_path
 
 if __name__ == "__main__":
-    #arr = [np.float32(0.9715434), np.float32(0.9713861), np.float32(0.9718645), np.float32(0.97143364), np.float32(0.9698601), np.float32(0.97221655), np.float32(0.96804017), np.float32(0.9709878), np.float32(0.970409), np.float32(0.96975136), np.float32(0.9705501), np.float32(0.9698626), np.float32(0.96868855), np.float32(0.9724921), np.float32(0.97086674), np.float32(0.9700451), np.float32(0.9695116), np.float32(0.9721573), np.float32(0.97032446)]
+    #arr = [np.float32(0.99933124), np.float32(0.9993057), np.float32(0.9992981), np.float32(0.9993009), np.float32(0.9993216), np.float32(0.99925894), np.float32(0.9992607), np.float32(0.9993043), np.float32(0.999252), np.float32(0.9993219), np.float32(0.9992284), np.float32(0.999294), np.float32(0.9992735), np.float32(0.9993488), np.float32(0.9993084), np.float32(0.9993332), np.float32(0.9993253), np.float32(0.9992544), np.float32(0.99928164)]
     #save_line_plot(arr, output_path="images/encodec_cosine_similarity_per_step_plot.png", title="encodec cosine similarity per step plot", xlabel="Steps", ylabel="Cosine Similarity (Encodec)")
 
-    #arr = [np.float32(2.4858298), np.float32(2.8969822), np.float32(2.6551948), np.float32(2.7343056), np.float32(2.767185), np.float32(2.511956), np.float32(3.0303855), np.float32(2.6071973), np.float32(2.8371124), np.float32(2.8789208), np.float32(2.9904044), np.float32(3.0855417), np.float32(2.9219482), np.float32(2.4021347), np.float32(2.8353603), np.float32(2.7815094), np.float32(2.9027252), np.float32(2.714747), np.float32(2.9250226)]
+    #arr = [np.float32(0.07977717), np.float32(0.07920804), np.float32(0.08648226), np.float32(0.10145918), np.float32(0.070338435), np.float32(0.07417515), np.float32(0.08902883), np.float32(0.08351044), np.float32(0.085272744), np.float32(0.07908802), np.float32(0.08136624), np.float32(0.08352053), np.float32(0.08429008), np.float32(0.078603536), np.float32(0.08145918), np.float32(0.075814374), np.float32(0.08098524), np.float32(0.08521092), np.float32(0.08416409)]
     #save_line_plot(arr, output_path="images/melspec_cosine_similarity_per_step_plot.png", title="melspec L1 per step plot", xlabel="Steps", ylabel="Mel Spec L1")
 
     save_melspectrogram(

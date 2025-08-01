@@ -52,7 +52,7 @@ class Inferencer:
 
     textclenaer = TextCleaner()
 
-    def __init__(self, sampler_class=ADPM2NoiseInsersionSampler):
+    def __init__(self, diffusion_class=DiffusionNoiseInsertSampler, sampler_class=ADPM2NoiseInsersionSampler):
         self.device = "cuda"
         self.config_path = "/gpfs/fs3c/nrc/dt/tst000/.cache/huggingface/hub/models--yl4579--StyleTTS2-LibriTTS/snapshots/3aa7ba7f8f275ec13dce21682a61494c35089e2a/Models/LibriTTS/config.yml"
 
@@ -61,7 +61,7 @@ class Inferencer:
         self.model_checkpoint_dir = "/gpfs/fs3c/nrc/dt/tst000/.cache/huggingface/hub/models--yl4579--StyleTTS2-LibriTTS/snapshots/3aa7ba7f8f275ec13dce21682a61494c35089e2a/Models/LibriTTS/"
 
         self.model, self.model_params = self.load_model(self.config, self.model_checkpoint_dir)
-        self.sampler = DiffusionNoiseInsertSampler(
+        self.sampler = diffusion_class(
             self.model.diffusion.diffusion,
             sampler=sampler_class(),
             sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0), # empirical parameters
@@ -135,7 +135,12 @@ class Inferencer:
 
         return torch.cat([ref_s, ref_p], dim=1)
 
-    def inference(self, text, ref_s, alpha = 0.3, beta = 0.7, diffusion_steps=5, embedding_scale=1, epsilons=None):
+    def inference(
+        self, 
+        noise, text, ref_s, alpha = 0.3, beta = 0.7,
+        diffusion_steps=5, embedding_scale=1,
+        epsilons=None, log_intermediate_steps=False
+    ):
         text = text.strip()
         ps = self.global_phonemizer.phonemize([text])
         ps = word_tokenize(ps[0])
@@ -151,14 +156,19 @@ class Inferencer:
             t_en = self.model.text_encoder(tokens, input_lengths, text_mask)
             bert_dur = self.model.bert(tokens, attention_mask=(~text_mask).int())
             d_en = self.model.bert_encoder(bert_dur).transpose(-1, -2)
-
-            s_pred = self.sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(self.device),
+            
+            result = self.sampler(noise = noise.to(self.device),
                                             embedding=bert_dur,
                                             embedding_scale=embedding_scale,
                                             features=ref_s, # reference from the same speaker as the embedding
                                             num_steps=diffusion_steps,
-                                            epsilons=epsilons).squeeze(1)
-
+                                            epsilons=epsilons,
+                                            return_intermediate=log_intermediate_steps)
+            if not log_intermediate_steps:
+                s_pred = result.squeeze(1)
+            else:
+                s_pred, x_steps = result
+                s_pred = s_pred.squeeze(1)
 
             s = s_pred[:, 128:]
             ref = s_pred[:, :128]
@@ -202,8 +212,12 @@ class Inferencer:
             out = self.model.decoder(asr,
                                     F0_pred, N_pred, ref.squeeze().unsqueeze(0))
 
+        out = out.squeeze().cpu().numpy()[..., :-50] # weird pulse at the end of the model, need to be fixed later
 
-        return out.squeeze().cpu().numpy()[..., :-50] # weird pulse at the end of the model, need to be fixed later
+        if not log_intermediate_steps:
+            return out
+
+        return out, x_steps
 
 def generate_sample_LibriTTS(
     text = "I go to school by bus.",
@@ -226,24 +240,26 @@ def generate_sample_LibriTTS(
 
     for k, path in reference_dicts.items():
         try:
+        #if True:
             ref_s = inferencer.compute_style(path)
 
             wav = inferencer.inference(
-                text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
+                noise, text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
                 epsilons=epsilons)
 
             m = np.max(np.abs(wav))
             wavf32 = (wav/m).astype(np.float32)
 
             write(f"{output_dir}/example_{k}_no_aug.wav", 24000, wavf32)
-        except: continue
+        except: 
+            continue
 
         current_epsilons = epsilons
         for i in range(diffusion_steps-1):
             current_epsilons[i] = special_noise
             start = time.time()
             wav = inferencer.inference(
-                text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
+                noise, text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
                 epsilons=current_epsilons)
 
             m = np.max(np.abs(wav))
@@ -251,11 +267,69 @@ def generate_sample_LibriTTS(
 
             write(f"{output_dir}/example_{k}_step_aug_{i}.wav", 24000, wavf32)
 
-def generate_audio_with_intermediate_steps():
+def generate_audio_with_intermediate_steps(
+    text = "I go to school by bus.",
+    tts_dataset_path=Path("/gpfs/fs3c/nrc/dt/tst000/LibriTTS/dev-clean/"),
+    output_dir=Path("/home/tst000/projects/tst000/intermidiate_diffusion_steps_styletts2_no_noise_euler/"),
+    num_max_speaker=5,
+    diffusion_steps=20,
+):
+
+    inferencer = Inferencer(
+        diffusion_class=DiffusionNoiseInsertSampler,
+        sampler_class=AEulerDeterministicSampler
+    )
+
+    reference_dicts = {
+        speaker_path.name: str(list(speaker_path.glob("**/*.wav"))[0]) for speaker_path in tts_dataset_path.glob("*")
+    }
+    device = "cuda"
+
+    noise = torch.randn(1,1,256).to(device)
+
+    for num, (k, path) in enumerate(reference_dicts.items()):
+        try:
+        #if True:
+            ref_s = inferencer.compute_style(path)
+
+            wav, x_steps = inferencer.inference(
+                noise, text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
+                log_intermediate_steps=True
+            )
+
+            m = np.max(np.abs(wav))
+            wavf32 = (wav/m).astype(np.float32)
+            save_dir = output_dir /  "audios"
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True)
+            write(save_dir / f"example_{k}_no_aug.wav", 24000, wavf32)
+
+            torch.save(
+                ref_s.detach().cpu(), save_dir / f"{k}_ref_s.pt")
+            with open(save_dir / f"{k}_text.txt", 'w') as f:
+                f.write(text)
+
+            save_dir = output_dir / "latents" / k
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True)
+            torch.save(
+                noise, save_dir / f"0.pt")
+
+            for i, x_t in enumerate(x_steps):
+                x_t = x_t.detach().cpu()
+                torch.save(
+                    x_t, save_dir / f"{i+1}.pt")
+            
+            print(k)
+            if num>num_max_speaker: break
+        except:
+            continue
+
     pass
 
 if __name__ == "__main__":
-    #generate_sample_LibriTTS()
+    generate_sample_LibriTTS()
+    #generate_audio_with_intermediate_steps()
     pass
 
     

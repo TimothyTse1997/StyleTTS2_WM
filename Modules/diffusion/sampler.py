@@ -528,12 +528,14 @@ class AEulerInverseSampler(AEulerSampler):
         return x_next
 
     def forward(
-        self, audio: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+        self, audio: Tensor, fn: Callable, sigmas: Tensor, num_steps: int,
+        oracle_steps=None,
     ) -> Tensor:
         x_T = audio #sigmas[0] * noise
         # Renoise sample
         for i in reversed(range(num_steps - 1)):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+            if oracle_steps is not None: x = oracle_steps[i]
         return x
 
 
@@ -606,7 +608,7 @@ class ADPM2NoiseInsersionSampler(ADPM2Sampler):
 
     def vector_update_with_epsilon(self, v, epsilon):
         # experimenting for different noise insertion method
-        scale = torch.norm(v, dim=(1, 2)) / 5
+        scale = torch.norm(v, dim=(1, 2)) / 2
         print(f"vect update activated: {scale}")
         v = v + epsilon * scale
         return v
@@ -651,7 +653,8 @@ class ADPM2NoiseInsersionSampler(ADPM2Sampler):
         fn: Callable,
         sigmas: Tensor,
         num_steps: int,
-        epsilons=None
+        epsilons=None,
+        **kwargs
     ) -> Tensor:
         x = sigmas[0] * noise
         # Denoise to sample
@@ -737,15 +740,16 @@ class DiffusionNoiseInsertSampler(DiffusionSampler):
                 noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons, return_intermediate=False)
             x = x.clamp(-1.0, 1.0) if self.clamp else x
             return x
-        else:
-            x, x_steps = self.sampler(
-                noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons, return_intermediate=True)
-            x = x.clamp(-1.0, 1.0) if self.clamp else x
-            return x, x_steps
+        x, x_steps = self.sampler(
+            noise, fn=fn, sigmas=sigmas, num_steps=num_steps, epsilons=epsilons, return_intermediate=True)
+        x = x.clamp(-1.0, 1.0) if self.clamp else x
+        return x, x_steps
 
 class DiffusionInversionSampler(DiffusionSampler):
     def forward(
-        self, audio: Tensor, num_steps: Optional[int] = None, **kwargs
+        self, audio: Tensor, num_steps: Optional[int] = None,
+        oracle_steps=None,
+        **kwargs
     ) -> Tensor:
         device = audio.device
         num_steps = default(num_steps, self.num_steps)  # type: ignore
@@ -758,7 +762,8 @@ class DiffusionInversionSampler(DiffusionSampler):
         fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
 
         # Sample using sampler
-        inv_noise, inter_steps = self.sampler(audio, fn=fn, sigmas=sigmas, num_steps=num_steps)
+        inv_noise, inter_steps = self.sampler(
+            audio, fn=fn, sigmas=sigmas, num_steps=num_steps, oracle_steps=oracle_steps)
         #x = x.clamp(-1.0, 1.0) if self.clamp else x
 
         return inv_noise, inv_steps
