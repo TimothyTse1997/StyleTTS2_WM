@@ -253,6 +253,17 @@ def generate_sample_LibriTTS(
             write(f"{output_dir}/example_{k}_no_aug.wav", 24000, wavf32)
         except: 
             continue
+        
+        for i in range(10):
+            tmp_noise = torch.randn(1,1,256).to(device)
+            wav = inferencer.inference(
+                tmp_noise, text, ref_s, alpha=0.3, beta=0.7, diffusion_steps=diffusion_steps, embedding_scale=1,
+                epsilons=epsilons)
+
+            m = np.max(np.abs(wav))
+            wavf32 = (wav/m).astype(np.float32)
+
+            write(f"{output_dir}/example_{k}_no_aug_rand_{i}.wav", 24000, wavf32)
 
         current_epsilons = epsilons
         for i in range(diffusion_steps-1):
@@ -328,8 +339,8 @@ def generate_audio_with_intermediate_steps(
     pass
 
 if __name__ == "__main__":
-    generate_sample_LibriTTS()
-    #generate_audio_with_intermediate_steps()
+    #generate_sample_LibriTTS()
+    generate_audio_with_intermediate_steps()
     pass
 
     

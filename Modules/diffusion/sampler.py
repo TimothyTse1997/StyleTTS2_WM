@@ -511,15 +511,22 @@ class AEulerInverseSampler(AEulerSampler):
     def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
         # Sigma steps
         sigma_up, sigma_down = self.get_sigmas(sigma, sigma_next)
+        assert(x is not None)
         x_tmp = x
+        assert(x_tmp is not None)
+
         if self.latent_average:
             all_tmp_x = []
+
         for i in range(self.inner_loop):
             # Derivative at sigma (∂x/∂sigma)
+            assert(x_tmp is not None)
             d = (x_tmp - fn(x_tmp, sigma=sigma)) / sigma
             # Euler method
             x_tmp = x - d * (sigma_down - sigma)
-            if self.latent_average: all_tmp_x.append(x_tmp)
+            if self.latent_average:
+                all_tmp_x.append(x_tmp)
+
         if self.latent_average:
             x_next = torch.stack(all_tmp_x).mean(0)
         else:
@@ -531,12 +538,18 @@ class AEulerInverseSampler(AEulerSampler):
         self, audio: Tensor, fn: Callable, sigmas: Tensor, num_steps: int,
         oracle_steps=None,
     ) -> Tensor:
-        x_T = audio #sigmas[0] * noise
+        x = audio #sigmas[0] * noise
+        if oracle_steps is not None:
+            x = oracle_steps[-1]
         # Renoise sample
+        all_reverse_steps = []
         for i in reversed(range(num_steps - 1)):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+            all_reverse_steps.append(x)
             if oracle_steps is not None: x = oracle_steps[i]
-        return x
+            #print(i, x.shape)
+
+        return x, list(reversed(all_reverse_steps))
 
 
 class ADPM2Sampler(Sampler):
@@ -751,7 +764,7 @@ class DiffusionInversionSampler(DiffusionSampler):
         oracle_steps=None,
         **kwargs
     ) -> Tensor:
-        device = audio.device
+        device = "cuda"#audio.device
         num_steps = default(num_steps, self.num_steps)  # type: ignore
         assert exists(num_steps), "Parameter `num_steps` must be provided"
 
@@ -762,7 +775,7 @@ class DiffusionInversionSampler(DiffusionSampler):
         fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
 
         # Sample using sampler
-        inv_noise, inter_steps = self.sampler(
+        inv_noise, inv_steps = self.sampler(
             audio, fn=fn, sigmas=sigmas, num_steps=num_steps, oracle_steps=oracle_steps)
         #x = x.clamp(-1.0, 1.0) if self.clamp else x
 

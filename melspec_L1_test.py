@@ -52,7 +52,7 @@ def encodec_test(audio_dir):
     no_aug_dict = {}
     aug_dict = defaultdict(dict)
 
-    for p in audio_dir.glob("example_*_no_aug*"):
+    for p in audio_dir.glob("example_*_no_aug.wav"):
         speaker = get_speaker(p.name)
         
         mel = wav2mel(p)

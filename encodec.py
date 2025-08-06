@@ -152,6 +152,60 @@ def pad_to_shape(max_shape, codec):
 
     return padded_codec
 
+def encodec_test_no_aug(audio_dir):
+    import re
+    from pathlib import Path
+    from collections import defaultdict
+
+    get_speaker = lambda name: re.findall(r"example\_(\d+)\_", name)[0]
+
+    encodec = EncodecAugModule()
+
+    audio_dir = Path(audio_dir)
+    speaker_embed_dict = defaultdict(list)
+    source_embed_dict = {}
+    all_speakers = []
+
+    for p in audio_dir.glob("example_*_no_aug.wav"):
+        speaker = get_speaker(p.name)
+        all_speakers.append(speaker)
+
+        inputs = encodec.load_inputs_from_file(p)
+        codec = encodec.encode_to_codec(inputs)
+        embed = encodec.get_embed_from_codec(codec)
+
+        source_embed_dict[speaker] = embed
+
+    for p in audio_dir.glob("example_*_no_aug_rand_*.wav"):
+        speaker = get_speaker(p.name)
+
+        inputs = encodec.load_inputs_from_file(p)
+        codec = encodec.encode_to_codec(inputs)
+        embed = encodec.get_embed_from_codec(codec)
+
+        speaker_embed_dict[speaker].append(embed)
+
+    print("complete encode no augmentation audios")
+    all_scores = []
+    for speaker in all_speakers:
+        embeds = speaker_embed_dict[speaker]
+
+        source_embed = source_embed_dict[speaker]
+
+        max_shape = source_embed.shape[-1]
+        for e in embeds:
+            max_shape = max(max_shape, e.shape[-1])
+
+        source_embed = pad_to_shape(max_shape, source_embed)
+        embeds = [pad_to_shape(max_shape, e) for e in embeds]
+
+        embeds = torch.cat(embeds)
+
+        score = batch_cosine_similarity(source_embed, embeds).mean()
+        print(f"speaker: {speaker}", score)
+        all_scores.append(score)
+    print(f"average of all speakers: {np.mean(all_scores)}")
+
 def encodec_test(audio_dir):
     import re
     from pathlib import Path
@@ -166,7 +220,7 @@ def encodec_test(audio_dir):
     no_aug_dict = {}
     aug_dict = defaultdict(dict)
 
-    for p in audio_dir.glob("example_*_no_aug*"):
+    for p in audio_dir.glob("example_*_no_aug.wav"):
         speaker = get_speaker(p.name)
 
         inputs = encodec.load_inputs_from_file(p)
@@ -222,8 +276,9 @@ if __name__ == "__main__":
     encodec = EncodecAugModule()
 
     test_dir = "../_examples/"
-    results = encodec_test(test_dir)
-    sorted_keys = sorted(list(results.keys()))
-    print(sorted_keys)
-    v = [np.mean(results[k]) for k in sorted_keys]
-    print(v)
+    encodec_test_no_aug(test_dir)
+    # results = encodec_test(test_dir)
+    # sorted_keys = sorted(list(results.keys()))
+    # print(sorted_keys)
+    # v = [np.mean(results[k]) for k in sorted_keys]
+    # print(v)

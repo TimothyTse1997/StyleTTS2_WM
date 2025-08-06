@@ -43,9 +43,11 @@ from Modules.diffusion.sampler import (
     AEulerInverseSampler
 )
 
-class LatentInvertor:
+from inference import Inferencer
 
-    def __init__(self):
+class LatentInvertor(Inferencer):
+
+    def __init__(self, inner_loop=5):
         self.device = "cuda"
         self.config_path = "/gpfs/fs3c/nrc/dt/tst000/.cache/huggingface/hub/models--yl4579--StyleTTS2-LibriTTS/snapshots/3aa7ba7f8f275ec13dce21682a61494c35089e2a/Models/LibriTTS/config.yml"
 
@@ -57,55 +59,95 @@ class LatentInvertor:
 
         self.sampler = DiffusionInversionSampler(
             self.model.diffusion.diffusion,
-            sampler=AEulerInverseSampler(),
+            sampler=AEulerInverseSampler(inner_loop=inner_loop),
             sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0), # empirical parameters
             clamp=False
         )
 
         pass
 
-    def load_model(self, config, model_checkpoint_dir):
-        # load pretrained ASR model
-        ASR_config = config.get('ASR_config', False)
-        ASR_path = config.get('ASR_path', False)
-        text_aligner = load_ASR_models(ASR_path, ASR_config)
+    @torch.no_grad()   
+    def load_wav_to_style(self, wavfname, ref_s, alpha = 0.3, beta = 0.7,):
+        recon_ref = self.compute_style(wavfname)
+        recon_s, recon_ref = recon_ref[:, 128:], recon_ref[:, :128]
 
-        # load pretrained F0 model
-        F0_path = config.get('F0_path', False)
-        pitch_extractor = load_F0_models(F0_path)
+        recon_ref = (recon_ref - ref_s[:, :128] * (1-alpha)) / alpha
+        recon_s = (recon_s - (1-beta) * ref_s[:, 128:]) / beta
 
-        BERT_path = config.get('PLBERT_dir', False)
-        plbert = load_plbert(BERT_path)
+        return torch.cat([recon_s, recon_ref], dim=1)
 
-        model_params = recursive_munch(config['model_params'])
+    @torch.no_grad()   
+    def oracle_inversion(
+        self, text, ref_s, list_of_latents, diffusion_steps=20, 
+        alpha = 0.3, beta = 0.7, embedding_scale=1
+    ):
+        intermiate_steps = list_of_latents[1:]
 
-        model = build_model(model_params, text_aligner, pitch_extractor, plbert)
+        text = text.strip()
+        ps = self.global_phonemizer.phonemize([text])
+        ps = word_tokenize(ps[0])
+        ps = ' '.join(ps)
+        tokens = self.textclenaer(ps)
+        tokens.insert(0, 0)
+        tokens = torch.LongTensor(tokens).to(self.device).unsqueeze(0)
 
-        _ = [model[key].eval() for key in model]
-        _ = [model[key].to(self.device) for key in model]
+        input_lengths = torch.LongTensor([tokens.shape[-1]]).to(self.device)
+        text_mask = self.length_to_mask(input_lengths).to(self.device)
 
-        params_whole = torch.load(f"{model_checkpoint_dir}epochs_2nd_00020.pth")
+        t_en = self.model.text_encoder(tokens, input_lengths, text_mask)
+        bert_dur = self.model.bert(tokens, attention_mask=(~text_mask).int())
+        d_en = self.model.bert_encoder(bert_dur).transpose(-1, -2)
 
-        params = params_whole['net']
+        inv_noise, inv_steps = self.sampler(
+            audio=None,
+            num_steps=diffusion_steps,
+            #return_intermediate=log_intermediate_steps)
+            oracle_steps=intermiate_steps,
+            #epsilons=epsilons
+            embedding=bert_dur,
+            embedding_scale=embedding_scale,
+            features=ref_s, # reference from the same speaker as the embedding
+        )
 
-        for key in model:
-            if key in params:
-                print('%s loaded' % key)
-                try:
-                    model[key].load_state_dict(params[key])
-                except:
-                    from collections import OrderedDict
-                    state_dict = params[key]
-                    new_state_dict = OrderedDict()
-                    for k, v in state_dict.items():
-                        name = k[7:] # remove `module.`
-                        new_state_dict[name] = v
-                    # load params
-                    model[key].load_state_dict(new_state_dict, strict=False)
-        #             except:
-        #                 _load(params[key], model[key])
-        _ = [model[key].eval() for key in model]
-        return model, model_params
+        return inv_noise, inv_steps
     
-    def oracle_inversion(self, diffusion_steps, list_of_latents):
-        pass
+
+def inversion_test(
+    data_dir='/home/tst000/projects/tst000/intermidiate_diffusion_steps_styletts2_no_noise_euler',
+    device="cuda",
+    invertor=None,#LatentInvertor()
+):
+    data_dir = Path(data_dir)
+    
+    for speaker_latent_dir in (data_dir / "latents").glob("*"):
+        speaker = speaker_latent_dir.name
+
+        ref_s = torch.load(data_dir / "audios" / f"{speaker}_ref_s.pt").to(device)
+        text = open(data_dir / "audios" / f"{speaker}_text.txt", 'r').readline()
+
+        latents = []
+        for i in range(20):
+            fname = f"{i}.pt"
+            latent = torch.load(speaker_latent_dir / fname).to(device)
+            latents.append(latent)
+        
+        inv_noise, inv_steps = invertor.oracle_inversion(
+            text, ref_s, latents
+        )
+        print(inv_noise.shape)
+        print(inv_steps[0].shape)
+        print(len(inv_steps))
+
+        for i in range(19):
+            print(i, ((inv_steps[i] - latents[i+1]) ** 2).mean())
+        break
+    pass
+
+if __name__ == "__main__":
+    invertor = LatentInvertor()
+    for i in range(1, 10):
+        print(invertor.sampler.sampler)
+        invertor.sampler.sampler.inner_loop = i
+        invertor.sampler.sampler.latent_average = True
+        print(f"=================inner loop: {i}=================")
+        inversion_test(invertor=invertor)
